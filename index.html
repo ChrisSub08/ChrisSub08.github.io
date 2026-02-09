@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Digicode</title>
+    <meta name="description" content="Spot the security flaw in a naive pin lock" />
+    <style>
+      :root {
+        font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+        line-height: 1.5;
+        font-weight: 400;
+
+        color-scheme: light dark;
+        color: rgba(255, 255, 255, 0.87);
+        background-color: #242424;
+
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      body {
+        margin: 0;
+        display: flex;
+        place-items: center;
+        min-width: 320px;
+      }
+
+      #app {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 2rem;
+        text-align: center;
+      }
+
+      button {
+        border-radius: 8px;
+        border: 1px solid transparent;
+        padding: 0.6em 1.2em;
+        margin: 0.2em;
+        font-size: 1.4em;
+        font-weight: 500;
+        font-family: inherit;
+        background-color: #1a1a1a;
+        cursor: pointer;
+        transition: border-color 0.25s;
+      }
+      button:hover {
+        border-color: #646cff;
+      }
+      button:focus,
+      button:focus-visible {
+        outline: 4px auto -webkit-focus-ring-color;
+      }
+
+      #output {
+        display: flex;
+        align-items: stretch;
+        letter-spacing: .2em;
+        margin-bottom: .4em;
+      }
+      #display {
+        flex-grow: 1;
+        text-align: left;
+        padding: .25em .75em;
+        font-size: 1.5em;
+        background-color: #1a1a1a;
+        box-shadow: inset -.25rem -.25rem .5rem rgba(0,0,0,.5);
+        height: inherit;
+      }
+
+      #light {
+        width: 3em;
+        height: 3em;
+        border-radius: 50%;
+        background-color: #1a1a1a;
+        margin-left: .75em;
+      }
+      #light.is-error {
+        background-color: #fd3838;
+      }
+      #light.is-success {
+        background-color: #46fd46;
+      }
+
+      #keypad {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+      }
+      #keypad > button:last-child {
+        grid-column: 2;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          color: #213547;
+          background-color: #ffffff;
+        }
+        #display {
+          background-color: #eeeeee;
+          box-shadow: inset -.25rem -.25rem .5rem rgba(0,0,0,.1);
+        }
+        button, #light {
+          background-color: #eeeeee;
+        }
+      }
+      @media (max-width: 480px) {
+        #output {
+          font-size: 1.6em;
+        }
+        button {
+          font-size: 1.5em;
+          padding: 0.8em 1.4em;
+          margin: 0.3em;
+        }
+      }
+
+      #layout {
+        display: flex;
+        align-items: center;
+        gap: 3rem;
+      }
+
+      #app {
+        flex-shrink: 0;
+      }
+
+
+      #door-container {
+        width: 220px;
+        height: 320px;
+        margin: 1em auto;
+        padding: 10px;
+        background: linear-gradient(145deg, #3a2a1a, #1f140a);
+        box-shadow:
+          inset 0 0 10px rgba(0,0,0,.8),
+          0 10px 30px rgba(0,0,0,.6);
+        perspective: 900px;
+        flex-shrink: 0;
+        margin-top: 2.2rem;
+      }
+
+      #door {
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(120deg, #7b4a1f, #4a2a12);
+        transform-origin: left center;
+        transition: transform 1.5s ease-in-out;
+        box-shadow:
+          inset -5px 0 10px rgba(0,0,0,.6),
+          5px 0 15px rgba(0,0,0,.5);
+      }
+
+      #door.open {
+        transform: rotateY(-105deg);
+      }
+
+      #door::after {
+        content: '';
+        position: absolute;
+        right: 15px;
+        top: 50%;
+        width: 12px;
+        height: 12px;
+        background: gold;
+        border-radius: 50%;
+        transform: translateY(-50%);
+        box-shadow: 0 0 5px rgba(255,215,0,.8);
+      }
+
+      #fireworks {
+        position: fixed;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      @media (max-width: 700px) {
+        #layout {
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="layout">
+      <div id="app">
+        <div id="output">
+          <div id="display"></div>
+          <div id="light"></div>
+        </div>
+        <div id="keypad"></div>
+      </div>
+      <div id="door-container">
+        <div id="door"></div>
+      </div>
+      <canvas id="fireworks"></canvas>
+    </div>
+    <script>
+      const IS_SUCCESS = 'is-success';
+      const IS_ERROR = 'is-error';
+      const DELAY = 600;
+      const CODE = generateCode(4);
+      let builder = '';
+
+      const display = /** @type {HTMLDivElement} */ (document.getElementById('display'));
+      const light = /** @type {HTMLDivElement} */ (document.getElementById('light'));
+      const keypad = /** @type {HTMLDivElement} */ (document.getElementById('keypad'));
+
+      /** @type {number|null} */
+      let taskId = null;
+
+      /**
+       * @param {number} len
+       * @returns {string}
+       */
+      function generateCode(len) {
+        let code = '';
+        for (let i = 0; i < len; i++) {
+          code += Math.floor(Math.random() * 10).toString();
+        }
+        return code;
+      }
+
+      function resetCode() {
+        builder = '';
+        display.innerText = '_'.repeat(CODE.length);
+        light.classList.remove(IS_SUCCESS, IS_ERROR);
+      }
+
+      /**
+       * @param {number} digit
+       */
+      function composeDigit(digit) {
+        if (button_push) return;
+        button_push = true;
+
+        if (taskId !== null) {
+          clearTimeout(taskId);
+          taskId = null;
+        }
+        if (builder.length < CODE.length) {
+          builder += digit.toString();
+        }
+        display.innerText = builder + '_'.repeat(CODE.length - builder.length);
+        light.classList.remove(IS_SUCCESS, IS_ERROR);
+        if (CODE.startsWith(builder)) {
+          light.classList.add(IS_SUCCESS);
+          if (builder === CODE) {
+            onSuccess();
+          }
+          button_push = false;
+        } else {
+          light.classList.add(IS_ERROR);
+          taskId = setTimeout(removeLastDigit, DELAY);
+        }
+      }
+
+      function removeLastDigit() {
+        builder = builder.slice(0, -1);
+        display.innerText = builder + '_'.repeat(CODE.length - builder.length);
+        button_push = false;
+      }
+
+      const canvas = document.getElementById('fireworks');
+      const ctx = canvas.getContext('2d');
+
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      function firework(x, y) {
+        for (let i = 0; i < 40; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = Math.random() * 4 + 2;
+          const life = 60;
+
+          particles.push({
+            x, y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life
+          });
+        }
+      }
+
+      const particles = [];
+
+      function animateFireworks() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        particles.forEach(p => {
+          p.x += p.vx;
+          p.y += p.vy;
+          p.life--;
+
+          ctx.fillStyle = 'hsl(' + Math.random() * 360 + ',100%,60%)';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+          if (particles[i].life <= 0) {
+            particles.splice(i, 1);
+          }
+        }
+
+        requestAnimationFrame(animateFireworks);
+      }
+
+      function onSuccess() {
+        document.getElementById('door').classList.add('open');
+
+        for (let i = 0; i < 5; i++) {
+          setTimeout(() => {
+            firework(
+              Math.random() * canvas.width,
+              Math.random() * canvas.height / 2
+            );
+          }, i * 300);
+        }
+      }
+
+      animateFireworks();
+
+      let button_push = false;
+
+      for (let i = 1; i < 11; i++) {
+        const digit = i % 10;
+        const button = document.createElement('button');
+        button.innerText = digit.toString();
+        button.onclick = () => composeDigit(digit);
+        keypad.appendChild(button);
+      }
+      resetCode();
+    </script>
+  </body>
+</html>
